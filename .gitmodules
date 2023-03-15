@@ -1,0 +1,3 @@
+[submodule "protos/mev-protos"]
+	path = protos/mev-protos
+	url = git@github.com:jito-labs/mev-protos.git
