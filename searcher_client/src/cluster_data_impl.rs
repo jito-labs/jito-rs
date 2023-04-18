@@ -12,7 +12,7 @@ use jito_protos::searcher::{
     searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
     ConnectedLeadersResponse,
 };
-use log::{error, info};
+use log::error;
 use solana_sdk::pubkey::Pubkey;
 use tokio::{
     sync::{
