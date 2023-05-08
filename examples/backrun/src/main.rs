@@ -37,7 +37,7 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::{read_keypair_file, Keypair, Signer},
     system_instruction::transfer,
-    transaction::Transaction,
+    transaction::{Transaction, VersionedTransaction},
 };
 use thiserror::Error;
 use tokio::{
@@ -66,7 +66,7 @@ struct Args {
     #[clap(long, env)]
     auth_keypair: String,
 
-    /// Pubsub URL. Note that this RPC server must have --rpc-pubsub-enable-block-subscription enabled
+    /// Pubsub URL.
     #[clap(long, env)]
     pubsub_url: String,
 
@@ -90,19 +90,19 @@ struct Args {
 #[derive(Debug, Error)]
 enum BackrunError {
     #[error("TonicError {0}")]
-    TonicError(#[from] tonic::transport::Error),
+    Tonic(#[from] tonic::transport::Error),
     #[error("GrpcError {0}")]
-    GrpcError(#[from] Status),
+    Grpc(#[from] Status),
     #[error("RpcError {0}")]
-    RpcError(#[from] ClientError),
+    Rpc(#[from] ClientError),
     #[error("PubSubError {0}")]
-    PubSubError(#[from] PubsubClientError),
+    PubSub(#[from] PubsubClientError),
 }
 
 #[derive(Clone, Debug)]
 struct BundledTransactions {
-    mempool_txs: Vec<Transaction>,
-    backrun_txs: Vec<Transaction>,
+    mempool_txs: Vec<VersionedTransaction>,
+    backrun_txs: Vec<VersionedTransaction>,
 }
 
 type Result<T> = result::Result<T, BackrunError>;
@@ -210,6 +210,7 @@ async fn get_searcher_client(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn backrun_loop(
     auth_keypair: Arc<Keypair>,
     payer_keypair: Arc<Keypair>,
@@ -283,7 +284,8 @@ async fn backrun_loop(
                     continue;
                 }
 
-                let mut mempool_receiver: Receiver<Vec<Transaction>> = mempool_receiver.unwrap();
+                let mut mempool_receiver: Receiver<Vec<VersionedTransaction>> =
+                    mempool_receiver.unwrap();
                 let mut bundle_results_receiver: Receiver<BundleResult> =
                     bundle_results_receiver.unwrap();
 
@@ -362,7 +364,7 @@ async fn backrun_loop(
 }
 
 fn build_backrun_bundles(
-    transactions: Vec<Transaction>,
+    transactions: Vec<VersionedTransaction>,
     keypair: &Keypair,
     blockhash: &Hash,
     tip_accounts: &[Pubkey],
@@ -371,7 +373,7 @@ fn build_backrun_bundles(
     let mut rng = thread_rng();
     transactions
         .into_iter()
-        .filter_map(|mempool_tx| {
+        .map(|mempool_tx| {
             let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
 
             let backrun_tx = Transaction::new_signed_with_payer(
@@ -386,10 +388,10 @@ fn build_backrun_bundles(
                 &[keypair],
                 *blockhash,
             );
-            Some(BundledTransactions {
+            BundledTransactions {
                 mempool_txs: vec![mempool_tx],
-                backrun_txs: vec![backrun_tx],
-            })
+                backrun_txs: vec![backrun_tx.into()],
+            }
         })
         .collect()
 }
