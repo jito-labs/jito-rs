@@ -74,7 +74,6 @@ pub trait ClusterData {
 pub struct SearcherClient<C: ClusterData, T> {
     cluster_data: Arc<C>,
     searcher_service_client: Arc<Mutex<SearcherServiceClient<T>>>,
-    tpu_client: Arc<TpuClient>,
     exit: Arc<AtomicBool>,
 }
 
@@ -88,13 +87,11 @@ where
     pub fn new(
         cluster_data: C,
         searcher_service_client: SearcherServiceClient<T>,
-        tpu_client: TpuClient,
         exit: Arc<AtomicBool>,
     ) -> Self {
         Self {
             searcher_service_client: Arc::new(Mutex::new(searcher_service_client)),
             cluster_data: Arc::new(cluster_data),
-            tpu_client: Arc::new(tpu_client),
             exit,
         }
     }
@@ -141,6 +138,7 @@ where
     /// Returns a list of results corresponding to the supplied transactions ordering.
     pub async fn send_transactions(
         &self,
+        tpu_client: &TpuClient,
         transactions: Vec<VersionedTransaction>,
     ) -> Vec<SearcherClientResult<()>> {
         let futs = transactions
@@ -148,7 +146,7 @@ where
             .map(|tx| async move {
                 let serialized_tx = serialize(&tx)
                     .map_err(|_e| SearcherClientError::TransactionSerializationError)?;
-                if !self.tpu_client.send_wire_transaction(serialized_tx).await {
+                if !tpu_client.send_wire_transaction(serialized_tx).await {
                     Err(SearcherClientError::TpuClientError)
                 } else {
                     Ok(())

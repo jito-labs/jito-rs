@@ -26,8 +26,7 @@ use log::*;
 use rand::{thread_rng, Rng};
 use solana_client::{
     client_error::ClientError,
-    nonblocking::{pubsub_client::PubsubClientError, rpc_client::RpcClient, tpu_client::TpuClient},
-    tpu_client::TpuClientConfig,
+    nonblocking::{pubsub_client::PubsubClientError, rpc_client::RpcClient},
 };
 use solana_metrics::{datapoint_error, set_host_id};
 use solana_sdk::{
@@ -176,7 +175,6 @@ async fn main() {
 
 async fn get_searcher_client(
     auth_keypair: &Arc<Keypair>,
-    tpu_client: TpuClient,
     exit: &Arc<AtomicBool>,
     block_engine_url: &str,
     rpc_pubsub_addr: &str,
@@ -203,7 +201,6 @@ async fn get_searcher_client(
         SearcherClient::new(
             cluster_data_impl.clone(),
             searcher_service_client,
-            tpu_client,
             exit.clone(),
         ),
         cluster_data_impl,
@@ -246,13 +243,6 @@ async fn backrun_loop(
 
         match get_searcher_client(
             &auth_keypair,
-            TpuClient::new(
-                rpc_client.clone(),
-                &rpc_pubsub_addr,
-                TpuClientConfig::default(),
-            )
-            .await
-            .unwrap(),
             &exit,
             block_engine_addr.as_str(),
             rpc_pubsub_addr.as_str(),
