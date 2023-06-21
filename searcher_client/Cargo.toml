@@ -19,4 +19,3 @@ solana-sdk = { git = "https://github.com/jito-foundation/jito-solana.git", tag =
 thiserror = "1.0.39"
 tokio = { version = "1.14.1", features = ["full"] }
 tonic = { version = "0.8.3", features = ["tls"] }
-uuid = { version = "1.0.0", features = ["v4", "fast-rng"] }
