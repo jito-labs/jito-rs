@@ -19,7 +19,7 @@ use jito_protos::{
 };
 use jito_searcher_client::{
     client_interceptor::ClientInterceptor, cluster_data_impl::ClusterDataImpl, grpc_connect,
-    utils::derive_tip_accounts, ClusterData, SearcherClient, SearcherClientError,
+    utils::derive_tip_accounts, BundleId, ClusterData, SearcherClient, SearcherClientError,
     SearcherClientResult,
 };
 use log::*;
@@ -44,7 +44,6 @@ use tokio::{
     time::{interval, sleep},
 };
 use tonic::{codegen::InterceptedService, transport::Channel, Status};
-use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -112,7 +111,7 @@ async fn send_bundles(
         InterceptedService<Channel, ClientInterceptor>,
     >,
     bundles: &[BundledTransactions],
-) -> Result<Vec<result::Result<Uuid, SearcherClientError>>> {
+) -> Result<Vec<result::Result<BundleId, SearcherClientError>>> {
     let mut futs = vec![];
     for b in bundles {
         let txs = b

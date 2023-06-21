@@ -1901,7 +1901,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tonic",
- "uuid",
 ]
 
 [[package]]
@@ -1932,7 +1931,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tonic",
- "uuid",
 ]
 
 [[package]]
