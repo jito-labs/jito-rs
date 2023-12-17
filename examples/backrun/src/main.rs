@@ -250,7 +250,7 @@ async fn backrun_loop(
         {
             Ok((mut searcher_client, cluster_data)) => {
                 let mempool_receiver = searcher_client
-                    .subscribe_mempool_accounts(&accounts_to_backrun[..], 1_000)
+                    .subscribe_mempool_accounts(&accounts_to_backrun[..], vec![], 1_000)
                     .await;
                 if let Err(e) = mempool_receiver {
                     mempool_subscription_conns_errs += 1;

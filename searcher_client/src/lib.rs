@@ -161,6 +161,8 @@ where
     pub async fn subscribe_mempool_accounts(
         &self,
         accounts: &[Pubkey],
+        // Regions to subscribe to
+        regions: Vec<String>,
         buffer_size: usize,
     ) -> SearcherClientResult<Receiver<Vec<VersionedTransaction>>> {
         let (sender, receiver) = channel(buffer_size);
@@ -175,6 +177,7 @@ where
                         accounts: accounts.iter().map(|account| account.to_string()).collect(),
                     },
                 )),
+                regions,
             })
             .await?
             .into_inner();
