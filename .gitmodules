@@ -1,3 +1,6 @@
 [submodule "protos/mev-protos"]
 	path = protos/mev-protos
 	url = git@github.com:jito-labs/mev-protos.git
+[submodule "json-rpc-client"]
+	path = json-rpc-client
+	url = https://github.com/jito-labs/json-rpc-client.git
