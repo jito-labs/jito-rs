@@ -46,7 +46,7 @@ jobs:
         with:
           context: ./proxy_server
           push: true
-          tags: jitolabs/block-engine-proxy-server:${{github.ref_name}}, jitolabs/block-engine-proxy-server:latest
+          tags: jitolabs/block-engine-proxy-server:${{github.ref_name}}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/arm64,linux/x86_64
