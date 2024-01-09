@@ -40,8 +40,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
-          context: .
-          file: ./proxy_server/Dockerfile
+          context: ./proxy_server
           push: true
           tags: jitolabs/block-engine-proxy-server:${{github.sha}}
           cache-from: type=gha
