@@ -1,10 +1,10 @@
-name: build
+name: Lint
 
 on:
   pull_request:
 
 jobs:
-  build_proxy_server:
+  lint_proxy_server:
     runs-on: ubuntu-20.04-16c-64g
     defaults:
       run:
@@ -24,9 +24,18 @@ jobs:
         with:
           caller-workflow-name: test
 
+      - name: Setup Rust tools
+        run: |
+          cargo install cargo-sort
+        shell: bash
+
+      - name: Workspace sort
+        run: cargo sort --workspace --check
+        shell: bash
+
+      - name: Fmt
+        run: cargo fmt --all --check
+        shell: bash
+
       - name: Clippy check
         run: cargo clippy --all-features --all-targets --tests -- -D warnings
-
-      - name: Run tests
-        run: |
-            ./run_proxy_server.sh && ./stop_proxy_server.sh
