@@ -21,9 +21,9 @@ use tokio::{
     },
     time::{interval, timeout, Interval},
 };
-use tonic::{codegen::InterceptedService, transport::Channel};
+use tonic::codegen::{Body, Bytes, StdError};
 
-use crate::{client_interceptor::ClientInterceptor, ClusterData, Slot};
+use crate::{ClusterData, Slot};
 
 /// Convenient types.
 type JitoLeaderScheduleCache = Arc<Mutex<BTreeMap<Slot, LeaderScheduleCacheEntry>>>;
@@ -44,13 +44,18 @@ pub struct ClusterDataImpl {
 
 impl ClusterDataImpl {
     /// Creates a new instance of this object; also spawns a few background tokio tasks.
-    pub async fn new(
+    pub async fn new<T>(
         rpc_pubsub_addr: String,
-        searcher_service_client: SearcherServiceClient<
-            InterceptedService<Channel, ClientInterceptor>,
-        >,
+        searcher_service_client: SearcherServiceClient<T>,
         exit: Arc<AtomicBool>,
-    ) -> Self {
+    ) -> Self
+    where
+        T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+        <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+    {
         let current_slot = Arc::new(AtomicU64::new(0));
         let jito_leader_schedule_cache = Arc::new(Mutex::new(BTreeMap::new()));
 
@@ -100,15 +105,19 @@ impl ClusterDataImpl {
         }
     }
 
-    async fn jito_leader_schedule_cache_updater(
+    async fn jito_leader_schedule_cache_updater<T>(
         jito_leader_schedule_cache: JitoLeaderScheduleCache,
         current_slot: Arc<AtomicU64>,
-        mut searcher_service_client: SearcherServiceClient<
-            InterceptedService<Channel, ClientInterceptor>,
-        >,
+        mut searcher_service_client: SearcherServiceClient<T>,
         mut fetch_interval: Interval,
         exit: Arc<AtomicBool>,
-    ) {
+    ) where
+        T: tonic::client::GrpcService<tonic::body::BoxBody> + Send,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+        <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+    {
         const MAX_RETRIES: usize = 5;
         while !exit.load(Ordering::Relaxed) {
             let _ = fetch_interval.tick().await;
@@ -153,12 +162,17 @@ impl ClusterDataImpl {
         }
     }
 
-    async fn fetch_connected_leaders_with_retries(
-        searcher_service_client: &mut SearcherServiceClient<
-            InterceptedService<Channel, ClientInterceptor>,
-        >,
+    async fn fetch_connected_leaders_with_retries<T>(
+        searcher_service_client: &mut SearcherServiceClient<T>,
         max_retries: usize,
-    ) -> Option<ConnectedLeadersResponse> {
+    ) -> Option<ConnectedLeadersResponse>
+    where
+        T: tonic::client::GrpcService<tonic::body::BoxBody> + Send,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+        <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+    {
         for _ in 0..max_retries {
             if let Ok(resp) = searcher_service_client
                 .get_connected_leaders(ConnectedLeadersRequest {})
