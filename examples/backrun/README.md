@@ -1,6 +1,7 @@
 # Backrun Example
 
-## Example:
+## Example
+
 ```bash
 
 git submodule update --init --recursive
@@ -13,5 +14,6 @@ cargo b --release && \
     --pubsub-url ws://{RPC_URL}:8900 \
     --rpc-url http://{RPC_URL}:8899 \
     --tip-program-id {TIP_PROGRAM_ID} \
-    --backrun-accounts {account}
+    --accounts-to-backrun {account}
+    # Note: Don't provide AUTH_KEYPAIR if not planning to use authentication
 ```

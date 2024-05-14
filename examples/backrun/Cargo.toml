@@ -24,3 +24,4 @@ solana-transaction-status = { git = "https://github.com/jito-foundation/jito-sol
 thiserror = "1.0.40"
 tokio = "1.27.0"
 tonic = { version = "0.8.3", features = ["tls", "tls-roots", "tls-webpki-roots"] }
+uuid = "1.8.0"

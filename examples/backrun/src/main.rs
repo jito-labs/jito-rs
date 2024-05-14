@@ -43,6 +43,7 @@ use tokio::{
     sync::mpsc::Receiver,
     time::{interval, sleep},
 };
+use tonic::codegen::{Body, Bytes, StdError};
 use tonic::{codegen::InterceptedService, transport::Channel, Status};
 
 #[derive(Parser, Debug)]
@@ -62,7 +63,7 @@ struct Args {
 
     /// Path to keypair file used to authenticate with the backend
     #[clap(long, env)]
-    auth_keypair: String,
+    auth_keypair: Option<String>,
 
     /// Pubsub URL.
     #[clap(long, env)]
@@ -105,13 +106,17 @@ struct BundledTransactions {
 
 type Result<T> = result::Result<T, BackrunError>;
 
-async fn send_bundles(
-    searcher_client: &mut SearcherClient<
-        ClusterDataImpl,
-        InterceptedService<Channel, ClientInterceptor>,
-    >,
+async fn send_bundles<T>(
+    searcher_client: &mut SearcherClient<ClusterDataImpl, T>,
     bundles: &[BundledTransactions],
-) -> Result<Vec<result::Result<BundleId, SearcherClientError>>> {
+) -> Result<Vec<result::Result<BundleId, SearcherClientError>>>
+where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
     let mut futs = vec![];
     for b in bundles {
         let txs = b
@@ -141,10 +146,17 @@ async fn main() {
 
     let payer_keypair =
         Arc::new(read_keypair_file(Path::new(&args.payer_keypair)).expect("parse kp file"));
-    let auth_keypair =
-        Arc::new(read_keypair_file(Path::new(&args.auth_keypair)).expect("parse kp file"));
+    let auth_keypair = args
+        .auth_keypair
+        .as_ref()
+        .map(|path| Arc::new(read_keypair_file(Path::new(path)).expect("parse kp file")));
 
-    set_host_id(auth_keypair.pubkey().to_string());
+    set_host_id(
+        auth_keypair
+            .as_ref()
+            .map(|kp| kp.pubkey().to_string())
+            .unwrap_or(uuid::Uuid::new_v4().to_string()),
+    );
 
     let accounts_to_backrun: Vec<Pubkey> = args
         .accounts_to_backrun
@@ -152,27 +164,70 @@ async fn main() {
         .map(|a| Pubkey::from_str(a).unwrap())
         .collect();
     let tip_program_pubkey = Pubkey::from_str(&args.tip_program_id).unwrap();
+    let exit = graceful_panic(None);
 
-    tokio::spawn(async move {
-        backrun_loop(
-            auth_keypair,
-            payer_keypair,
-            args.block_engine_addr,
-            args.rpc_url,
-            args.pubsub_url,
-            args.message,
-            tip_program_pubkey,
-            accounts_to_backrun,
-            graceful_panic(None),
-        )
-        .await
-        .unwrap()
-    })
-    .await
-    .unwrap();
+    match auth_keypair {
+        Some(auth_keypair) => {
+            let (searcher_client, cluster_data) = get_searcher_client_auth(
+                &auth_keypair,
+                &exit,
+                args.block_engine_addr.as_str(),
+                args.rpc_url.as_str(),
+            )
+            .await
+            .expect("Failed to get searcher client with auth. Note: If you don't pass in the auth keypair, we can attempt to connect to the no auth endpoint");
+
+            tokio::spawn(async move {
+                backrun_loop(
+                    searcher_client,
+                    cluster_data,
+                    payer_keypair,
+                    args.block_engine_addr,
+                    args.rpc_url,
+                    args.pubsub_url,
+                    args.message,
+                    tip_program_pubkey,
+                    accounts_to_backrun,
+                    graceful_panic(None),
+                )
+                .await
+                .unwrap()
+            })
+            .await
+            .unwrap();
+        }
+        None => {
+            let (searcher_client, cluster_data) = get_searcher_client_no_auth(
+                &exit,
+                args.block_engine_addr.as_str(),
+                args.rpc_url.as_str(),
+            )
+            .await
+            .expect("Failed to get searcher client without auth");
+
+            tokio::spawn(async move {
+                backrun_loop(
+                    searcher_client,
+                    cluster_data,
+                    payer_keypair,
+                    args.block_engine_addr,
+                    args.rpc_url,
+                    args.pubsub_url,
+                    args.message,
+                    tip_program_pubkey,
+                    accounts_to_backrun,
+                    graceful_panic(None),
+                )
+                .await
+                .unwrap()
+            })
+            .await
+            .unwrap();
+        }
+    }
 }
 
-async fn get_searcher_client(
+async fn get_searcher_client_auth(
     auth_keypair: &Arc<Keypair>,
     exit: &Arc<AtomicBool>,
     block_engine_url: &str,
@@ -206,19 +261,52 @@ async fn get_searcher_client(
     ))
 }
 
+async fn get_searcher_client_no_auth(
+    exit: &Arc<AtomicBool>,
+    block_engine_url: &str,
+    rpc_pubsub_addr: &str,
+) -> SearcherClientResult<(SearcherClient<ClusterDataImpl, Channel>, ClusterDataImpl)> {
+    let searcher_channel = grpc_connect(block_engine_url).await?;
+    let searcher_service_client = SearcherServiceClient::new(searcher_channel);
+
+    let cluster_data_impl = ClusterDataImpl::new(
+        rpc_pubsub_addr.to_string(),
+        searcher_service_client.clone(),
+        exit.clone(),
+    )
+    .await;
+
+    Ok((
+        SearcherClient::new(
+            cluster_data_impl.clone(),
+            searcher_service_client,
+            exit.clone(),
+        ),
+        cluster_data_impl,
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
-async fn backrun_loop(
-    auth_keypair: Arc<Keypair>,
+async fn backrun_loop<T>(
+    mut searcher_client: SearcherClient<ClusterDataImpl, T>,
+    cluster_data: ClusterDataImpl,
     payer_keypair: Arc<Keypair>,
-    block_engine_addr: String,
+    _block_engine_addr: String,
     rpc_addr: String,
-    rpc_pubsub_addr: String,
+    _rpc_pubsub_addr: String,
     backrun_message: String,
     tip_program_pubkey: Pubkey,
     accounts_to_backrun: Vec<Pubkey>,
     exit: Arc<AtomicBool>,
-) -> Result<()> {
-    let mut conns_errs: usize = 0;
+) -> Result<()>
+where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
+    let _conns_errs: usize = 0;
     let mut mempool_subscription_conns_errs: usize = 0;
     let mut bundle_results_subscription_conns_errs: usize = 0;
     let mut mempool_subscription_errs: usize = 0;
@@ -240,111 +328,90 @@ async fn backrun_loop(
             .await?
             .0;
 
-        match get_searcher_client(
-            &auth_keypair,
-            &exit,
-            block_engine_addr.as_str(),
-            rpc_pubsub_addr.as_str(),
-        )
-        .await
-        {
-            Ok((mut searcher_client, cluster_data)) => {
-                let mempool_receiver = searcher_client
-                    .subscribe_mempool_accounts(&accounts_to_backrun[..], vec![], 1_000)
-                    .await;
-                if let Err(e) = mempool_receiver {
-                    mempool_subscription_conns_errs += 1;
-                    datapoint_error!(
-                        "subscribe_mempool_accounts_error",
-                        ("errors", mempool_subscription_conns_errs, i64),
-                        ("msg", e.to_string(), String)
-                    );
-                    continue;
+        let mempool_receiver = searcher_client
+            .subscribe_mempool_accounts(&accounts_to_backrun[..], vec![], 1_000)
+            .await;
+        if let Err(e) = mempool_receiver {
+            mempool_subscription_conns_errs += 1;
+            datapoint_error!(
+                "subscribe_mempool_accounts_error",
+                ("errors", mempool_subscription_conns_errs, i64),
+                ("msg", e.to_string(), String)
+            );
+            continue;
+        }
+
+        let bundle_results_receiver = searcher_client.subscribe_bundle_results(1_000).await;
+        if let Err(e) = bundle_results_receiver {
+            bundle_results_subscription_conns_errs += 1;
+            datapoint_error!(
+                "subscribe_bundle_results_error",
+                ("errors", bundle_results_subscription_conns_errs, i64),
+                ("msg", e.to_string(), String)
+            );
+            continue;
+        }
+
+        let mut mempool_receiver: Receiver<Vec<VersionedTransaction>> = mempool_receiver.unwrap();
+        let mut bundle_results_receiver: Receiver<BundleResult> = bundle_results_receiver.unwrap();
+
+        while !exit.load(Ordering::Relaxed) {
+            tokio::select! {
+                _ = blockhash_tick.tick() => {
+                    blockhash = rpc_client
+                    .get_latest_blockhash_with_commitment(CommitmentConfig {
+                        commitment: CommitmentLevel::Confirmed,
+                    })
+                    .await?
+                    .0;
+
+                    if let Some((next_jito_validator, next_slot)) = cluster_data.next_jito_validator().await {
+                        let current_slot = cluster_data.current_slot().await;
+
+                        if next_slot >= current_slot {
+                            info!("validator {next_jito_validator} upcoming in {} slots", next_slot - current_slot);
+                        } else {
+                            warn!("no upcoming jito validator");
+                        }
+                    } else {
+                        warn!("no connected jito validators");
+                    }
+
                 }
+                maybe_transactions = mempool_receiver.recv() => {
+                    if maybe_transactions.is_none() {
+                        datapoint_error!(
+                            "mempool_subscription_error",
+                            ("errors", mempool_subscription_errs, i64),
+                            ("msg", "channel closed", String)
+                        );
+                        mempool_subscription_errs += 1;
+                        break;
+                    }
+                    let transactions = maybe_transactions.unwrap();
+                    info!("received mempool {} transactions", transactions.len());
 
-                let bundle_results_receiver = searcher_client.subscribe_bundle_results(1_000).await;
-                if let Err(e) = bundle_results_receiver {
-                    bundle_results_subscription_conns_errs += 1;
-                    datapoint_error!(
-                        "subscribe_bundle_results_error",
-                        ("errors", bundle_results_subscription_conns_errs, i64),
-                        ("msg", e.to_string(), String)
-                    );
-                    continue;
-                }
-
-                let mut mempool_receiver: Receiver<Vec<VersionedTransaction>> =
-                    mempool_receiver.unwrap();
-                let mut bundle_results_receiver: Receiver<BundleResult> =
-                    bundle_results_receiver.unwrap();
-
-                while !exit.load(Ordering::Relaxed) {
-                    tokio::select! {
-                        _ = blockhash_tick.tick() => {
-                            blockhash = rpc_client
-                            .get_latest_blockhash_with_commitment(CommitmentConfig {
-                                commitment: CommitmentLevel::Confirmed,
-                            })
-                            .await?
-                            .0;
-
-                            if let Some((next_jito_validator, next_slot)) = cluster_data.next_jito_validator().await {
-                                let current_slot = cluster_data.current_slot().await;
-
-                                if next_slot >= current_slot {
-                                    info!("validator {next_jito_validator} upcoming in {} slots", next_slot - current_slot);
-                                } else {
-                                    warn!("no upcoming jito validator");
-                                }
-                            } else {
-                                warn!("no connected jito validators");
-                            }
-
-                        }
-                        maybe_transactions = mempool_receiver.recv() => {
-                            if maybe_transactions.is_none() {
-                                datapoint_error!(
-                                    "mempool_subscription_error",
-                                    ("errors", mempool_subscription_errs, i64),
-                                    ("msg", "channel closed", String)
-                                );
-                                mempool_subscription_errs += 1;
-                                break;
-                            }
-                            let transactions = maybe_transactions.unwrap();
-                            info!("received mempool {} transactions", transactions.len());
-
-                            let bundles = build_backrun_bundles(transactions, &payer_keypair, &blockhash, &tip_accounts, &backrun_message);
-                            if !bundles.is_empty() {
-                                let results = send_bundles(&mut searcher_client, &bundles).await?;
-                                let successful_sends = results.iter().filter(|res| res.is_ok()).collect::<Vec<_>>();
-                                let failed_sends = results.iter().filter(|res| res.is_err()).collect::<Vec<_>>();
-                                info!("successful_sends={}, failed_send={}", successful_sends.len(), failed_sends.len());
-                            }
-                        }
-                        maybe_bundle_result = bundle_results_receiver.recv() => {
-                            if maybe_bundle_result.is_none() {
-                                datapoint_error!(
-                                    "bundle_results_subscription_error",
-                                    ("errors", bundle_results_subscription_errs, i64),
-                                    ("msg", "channel closed", String)
-                                );
-                                bundle_results_subscription_errs += 1;
-                                break;
-                            }
-                            let bundle_result = maybe_bundle_result.unwrap();
-                            info!("received bundle_result: [bundle_id={:?}, result={:?}]", bundle_result.bundle_id, bundle_result.result);
-                        }
+                    let bundles = build_backrun_bundles(transactions, &payer_keypair, &blockhash, &tip_accounts, &backrun_message);
+                    if !bundles.is_empty() {
+                        let results = send_bundles(&mut searcher_client, &bundles).await?;
+                        let successful_sends = results.iter().filter(|res| res.is_ok()).collect::<Vec<_>>();
+                        let failed_sends = results.iter().filter(|res| res.is_err()).collect::<Vec<_>>();
+                        info!("successful_sends={}, failed_send={}", successful_sends.len(), failed_sends.len());
                     }
                 }
-            }
-            Err(e) => {
-                conns_errs += 1;
-                datapoint_error!(
-                    "searcher_connection_error",
-                    ("errors", conns_errs, i64),
-                    ("msg", e.to_string(), String)
-                );
+                maybe_bundle_result = bundle_results_receiver.recv() => {
+                    if maybe_bundle_result.is_none() {
+                        datapoint_error!(
+                            "bundle_results_subscription_error",
+                            ("errors", bundle_results_subscription_errs, i64),
+                            ("msg", "channel closed", String)
+                        );
+                        bundle_results_subscription_errs += 1;
+                        break;
+                    }
+                    let bundle_result = maybe_bundle_result.unwrap();
+                    info!("received bundle_result: [bundle_id={:?}, result={:?}]", bundle_result.bundle_id, bundle_result.result);
+                }
             }
         }
     }
