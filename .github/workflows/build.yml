@@ -1,0 +1,29 @@
+name: Build
+
+on:
+  pull_request:
+
+jobs:
+  build_proxy_server:
+    runs-on: ubuntu-20.04-16c-64g
+    defaults:
+      run:
+        working-directory: ./proxy_server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Sanity Check
+        run: |
+          cat /proc/cpuinfo
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          caller-workflow-name: test
+
+      - name: Run tests
+        run: |
+            ./run_proxy_server.sh && ./stop_proxy_server.sh
