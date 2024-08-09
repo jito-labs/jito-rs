@@ -98,6 +98,8 @@ where
     }
 
     /// Sends the list of transactions as a bundle iff the leader is a jito-solana.
+    /// Note: The leader check is not needed now that jito-sol is on 80% of the validator.
+    ///       This check is useful if the jito-sol validators are less than 50%.
     /// Returns the bundle's id.
     pub async fn send_bundle(
         &self,
@@ -106,6 +108,7 @@ where
         // determine whether or not the bundle can be sent.
         slot_lookahead: u64,
     ) -> SearcherClientResult<BundleId> {
+        ///Please see note above on leader conditional to verify if it is needed 
         let next_leader_slot = self
             .cluster_data
             .next_jito_validator()
